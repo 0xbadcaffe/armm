@@ -1,138 +1,120 @@
-```text
-   _____  __  __  _  _   _   _   _   _   _   _ 
-  / ____||  \/  || || | | | | | | \ | | | | | |
- | |     | \  / || || |_| | | | |  \| | | |_| |
- | |     | |\/| ||__   _| | | | | . ` | |  _  |
- | |____ | |  | |   | | | |_| | | |\  | | | | |
-  \_____||_|  |_|   |_|  \___/  |_| \_| |_| |_|
+# cm4u — Cortex-M4 Core Utilities
 
-        C O R T E X - M 4   U T I L I T I E S
+```text
+                .---------------------------.
+               /      C O R T E X  - M 4    \
+              /-------------------------------\
+             |   __  __   _  _   _   _        |
+             |  |  \/  | | || | | | | |       |
+             |  | |\/| | | || |_| | | |       |
+             |  | |  | | |__   _| | |_| |      |
+             |  |_|  |_|    |_|    \___/       |
+             |                                 |
+             |    [ NVIC ] [ SCB ] [ DWT ]    |
+             |    [ MPU  ] [ FPU ] [ SysTick ]|
+             |          register-level         |
+              \_______________________________/
+                    \   ^__^   /
+                     \  (oo)  /
+                        (__)       bare metal
 ```
 
-# cm4u – Cortex‑M4 Core Utilities
+`cm4u.h` is a small, header-only Cortex-M4 core layer intended to sit below an
+embedded application or vendor peripheral driver layer.
 
-Tiny, header‑only, **not‑a-HAL** core utilities for Cortex‑M4.
+It deliberately does **not** include CMSIS and does not depend on a vendor HAL.
+The API is implemented with Cortex-M4 system-register mappings plus compiler
+intrinsics/inline assembly.
 
-Prefix is `cm4u_` (Cortex‑M4 Utilities).  
-Focus is on **register‑level goodies** you always end up re‑writing:
+## Scope
 
-- DWT‑based cycle counter + delays (us / ms)
-- Check if you’re in **Thread** or **Handler** mode
-- CONTROL / PRIMASK / BASEPRI / FAULTMASK helpers
-- MSP / PSP helpers
-- Barriers (`DMB/DSB/ISB`) and `NOP`
-- PendSV + SVC triggers
-- Light NVIC helpers
-- Tiny profiling helpers
+- Core special registers: APSR, IPSR, xPSR, CONTROL, PRIMASK, BASEPRI,
+  FAULTMASK, MSP, PSP
+- Thread/Handler mode, privilege and active stack inspection
+- PRIMASK and BASEPRI critical sections
+- CPU instructions: NOP, WFI, WFE, SEV, ISB, DSB, DMB, CLREX
+- Exclusive accesses: LDREX/STREX 8/16/32
+- NVIC enable/disable/pending/active/priority/priority grouping/software trigger
+- SCB exception state, PendSV, SysTick pending, NMI, VTOR, sleep control,
+  divide-by-zero and unaligned traps
+- Configurable fault enable and fault status/address access
+- System reset
+- SysTick setup and direct control
+- DWT cycle counter, profiling, event counters, comparator configuration,
+  microsecond/millisecond delay helpers
+- CoreDebug trace and DebugMonitor helpers
+- Armv7-M MPU region control
+- Cortex-M4 FPU enable/lazy-stacking/status helpers
+- Basic ITM stimulus output
+- Small LDREX/STREX atomics
+- Bit helpers: byte reverse, bit reverse, CLZ, popcount, rotate, saturation
 
-No drivers, no peripherals, no HAL/BSP bloat.  
-Just the **core‑core** bits.
-
----
-
-## Files
-
-- `cm4u_core.h` – header‑only CM4 utilities (all `static inline`).
-- `example_main.c` – tiny usage example.
-
-Drop `cm4u_core.h` next to your CMSIS device headers and go.
-
----
-
-## Quick Start
+## Usage
 
 ```c
-#include "stm32f4xx.h"   // or your device
-#include "core_cm4.h"
-#include "cm4u_core.h"
+#include "cm4u.h"
 
 int main(void)
 {
-    const uint32_t core_hz = 168000000u;   // your core clock
+    const uint32_t core_hz = 168000000u;
 
-    // Enable DWT cycle counter once at startup
+    cm4u_fpu_enable();
+    cm4u_configurable_faults_enable();
+    cm4u_div0_trap_enable();
     cm4u_dwt_init();
 
-    // Simple 10 us delay
     cm4u_delay_us(10u, core_hz);
 
-    while (1) {
-        uint32_t start = cm4u_profile_cycles_start();
-
-        // Your low‑jitter, real‑time magic here
-        __NOP();
-
-        uint32_t spent_cycles = cm4u_profile_cycles_end(start);
-        (void)spent_cycles;
-    }
-}
-```
-
----
-
-## Thread vs Handler Mode
-
-```c
-void debug_where_am_i(void)
-{
     if (cm4u_in_thread_mode()) {
-        // main / task / normal code
-    } else if (cm4u_in_handler_mode()) {
-        uint32_t exc = cm4u_get_exception_number();
-        (void)exc; // e.g. log or blink a different LED
+        /* normal Thread mode */
+    }
+
+    for (;;) {
+        cm4u_wfi();
     }
 }
 ```
 
----
+## NVIC priority width
 
-## Critical Sections
-
-```c
-uint32_t primask = cm4u_critical_enter();
-/* non‑interruptible section */
-cm4u_critical_exit(primask);
-```
-
-This uses **PRIMASK** so you can safely nest different critical sections
-(if each stores and restores its own previous PRIMASK).
-
----
-
-## DWT‑Based Delays
+The number of implemented NVIC priority bits is device-specific. Set it before
+including the header if your MCU does not implement 4 bits:
 
 ```c
-void delay_example(uint32_t core_hz)
-{
-    cm4u_dwt_init();              // once is enough, but cheap if called again
-
-    cm4u_delay_us(5, core_hz);    // 5 microseconds
-    cm4u_delay_ms(1, core_hz);    // 1 millisecond
-}
+#define CM4U_NVIC_PRIO_BITS 3u
+#include "cm4u.h"
 ```
 
-This is **busy‑wait** and fully synchronous:
-- jitter is basically just the loop and `NOP`
-- ideal for short, deterministic waits
-- not for multi‑millisecond “sleep the system” style delays
+## MPU note
 
----
+The MPU is optional in the architecture. `cm4u_mpu_region_count()` lets you
+inspect the implemented region count at runtime. Region size must be a power of
+two and at least 32 bytes for the PMSAv7 MPU.
 
-## System Tricks
+## FPU note
 
-```c
-// Trigger PendSV (e.g. your own context switcher)
-cm4u_trigger_pendsv();
+Some Cortex-M4 implementations are Cortex-M4F (FPU present) and some do not
+implement the FPU. Set `CM4U_HAS_FPU=0` in a platform configuration if you want
+to exclude FPU use at a higher layer. The current header keeps the register API
+available because it targets the architectural Cortex-M4 core map.
 
-// Trigger SVC #0 (supervisor call)
-cm4u_trigger_svc(0);
+## Design boundary
 
-// Software reset
-cm4u_system_reset();
-```
+This is a **core** layer, not a complete MCU HAL. It intentionally does not own:
 
----
+- RCC/clock-tree setup
+- GPIO
+- DMA
+- UART/SPI/I2C
+- ADC/DAC
+- vendor interrupt numbers
+- vendor-specific power/reset registers
 
-## License
+Those belong in a small device/platform module layered on top of `cm4u.h`.
 
-MIT
+## Compatibility philosophy
+
+The API mirrors the useful functional surface of CMSIS-Core for Cortex-M4,
+while exposing extra convenience helpers such as mode checks, DWT delays,
+profiling, fault inspection and atomics. Names are intentionally different so
+it can coexist with CMSIS during migration.
