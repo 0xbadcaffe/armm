@@ -13,7 +13,7 @@
         bare metal • header only • no CMSIS required
 ```
 
-# armm 3.0
+# armm 🦾
 
 `armm` is a small, header-only Arm M-profile architectural runtime.
 
